@@ -1,4 +1,7 @@
 ﻿using System;
+#if CS120
+using System.Collections.Generic;
+#endif
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
@@ -47,6 +50,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		}
 
 		private static dynamic field;
+		private static volatile dynamic volatileField;
 		private static object objectField;
 		public dynamic Property { get; set; }
 
@@ -69,6 +73,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 #if CS70
 		private static void CallWithIn(in dynamic d)
+		{
+		}
+#endif
+
+#if CS120
+		private static void CallWithRefReadonly(ref readonly Dictionary<object, dynamic> d)
 		{
 		}
 #endif
@@ -435,10 +445,17 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return true.Equals(a);
 		}
 
+#if CS110 && NET70
+		private static nint NewIntPtr(dynamic a)
+		{
+			return new nint(a);
+		}
+#else
 		private static IntPtr NewIntPtr(dynamic a)
 		{
 			return new IntPtr(a);
 		}
+#endif
 
 		private static dynamic GetDynamic(int i)
 		{

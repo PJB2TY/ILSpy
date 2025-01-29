@@ -16,66 +16,24 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System.Composition;
 using System.Windows.Controls;
 using System.Xml.Linq;
+
+using TomsToolbox.Wpf.Composition.AttributedModel;
 
 namespace ICSharpCode.ILSpy.Options
 {
 	/// <summary>
 	/// Interaction logic for MiscSettingsPanel.xaml
 	/// </summary>
-	[ExportOptionPage(Title = nameof(Properties.Resources.Misc), Order = 30)]
-	public partial class MiscSettingsPanel : UserControl, IOptionPage
+	[DataTemplate(typeof(MiscSettingsViewModel))]
+	[NonShared]
+	public partial class MiscSettingsPanel
 	{
 		public MiscSettingsPanel()
 		{
 			InitializeComponent();
-		}
-
-		public void Load(ILSpySettings settings)
-		{
-			this.DataContext = LoadMiscSettings(settings);
-		}
-
-		static MiscSettings currentMiscSettings;
-
-		public static MiscSettings CurrentMiscSettings {
-			get {
-				return currentMiscSettings ?? (currentMiscSettings = LoadMiscSettings(ILSpySettings.Load()));
-			}
-		}
-
-		public static MiscSettings LoadMiscSettings(ILSpySettings settings)
-		{
-			XElement e = settings["MiscSettings"];
-			var s = new MiscSettings();
-			s.AllowMultipleInstances = (bool?)e.Attribute(nameof(s.AllowMultipleInstances)) ?? false;
-			s.LoadPreviousAssemblies = (bool?)e.Attribute(nameof(s.LoadPreviousAssemblies)) ?? true;
-
-			return s;
-		}
-
-		public void Save(XElement root)
-		{
-			var s = (MiscSettings)this.DataContext;
-
-			var section = new XElement("MiscSettings");
-			section.SetAttributeValue(nameof(s.AllowMultipleInstances), s.AllowMultipleInstances);
-			section.SetAttributeValue(nameof(s.LoadPreviousAssemblies), s.LoadPreviousAssemblies);
-
-			XElement existingElement = root.Element("MiscSettings");
-			if (existingElement != null)
-				existingElement.ReplaceWith(section);
-			else
-				root.Add(section);
-
-			currentMiscSettings = null; // invalidate cached settings
-		}
-
-		public void LoadDefaults()
-		{
-			currentMiscSettings = new MiscSettings();
-			this.DataContext = currentMiscSettings;
 		}
 	}
 }
