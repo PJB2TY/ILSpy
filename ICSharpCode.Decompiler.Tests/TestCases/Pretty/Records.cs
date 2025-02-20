@@ -1,5 +1,7 @@
 ﻿using System;
+#if CS100
 using System.Runtime.InteropServices;
+#endif
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
@@ -42,7 +44,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public record PairWithPrimaryCtor<A, B>(A First, B Second);
 
 		public record PrimaryCtor(int A, string B);
-		public record PrimaryCtorWithAttribute([RecordTest("param")] [property: RecordTest("property")][field: RecordTest("field")] int a);
+		public record PrimaryCtorWithAttribute([RecordTest("param")][property: RecordTest("property")][field: RecordTest("field")] int a);
 		public record PrimaryCtorWithField(int A, string B)
 		{
 			public double C = 1.0;
@@ -127,6 +129,8 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		}
 
 	}
+
+#if CS100
 	internal class RecordStructs
 	{
 		public record struct Base(string A);
@@ -165,7 +169,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public record struct PairWithPrimaryCtor<A, B>(A First, B Second);
 
 		public record struct PrimaryCtor(int A, string B);
-		public record struct PrimaryCtorWithAttribute([RecordTest("param")] [property: RecordTest("property")][field: RecordTest("field")] int a);
+		public record struct PrimaryCtorWithAttribute([RecordTest("param")][property: RecordTest("property")][field: RecordTest("field")] int a);
 		public record struct PrimaryCtorWithField(int A, string B)
 		{
 			public double C = 1.0;
@@ -227,10 +231,14 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 		}
 	}
-}
-namespace System.Runtime.CompilerServices
-{
-	internal class IsExternalInit
+#endif
+#if CS110
+	public record struct WithRequiredMembers
 	{
+		public int A { get; set; }
+		public required double B { get; set; }
+		public object C;
+		public required dynamic D;
 	}
+#endif
 }

@@ -101,24 +101,23 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			yield return 2;
 		}
 
-#if TODO
-		// TODO: adjust lock-pattern for this case
 		public static IEnumerable<int> YieldReturnInLock1(object o)
 		{
-			lock (o) {
+			lock (o)
+			{
 				yield return 1;
 			}
 		}
 
 		public static IEnumerable<int> YieldReturnInLock2(object o)
 		{
-			lock (o) {
+			lock (o)
+			{
 				yield return 1;
 				o = null;
 				yield return 2;
 			}
 		}
-#endif
 
 		public static IEnumerable<string> YieldReturnWithNestedTryFinally(bool breakInMiddle)
 		{
@@ -427,13 +426,6 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 			Console.WriteLine("normal exit");
 		}
-
-#if CS110 && false
-		public IEnumerable<object> YieldBangBang(object x!!)
-		{
-			yield return x;
-		}
-#endif
 
 		internal IEnumerable<int> ForLoopWithYieldReturn(int end, int evil)
 		{

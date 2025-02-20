@@ -51,4 +51,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		}
 	}
 #endif
+
+#if CS110
+	public struct StructWithRequiredMembers
+	{
+		public required string FirstName;
+		public required string LastName { get; set; }
+	}
+#endif
 }

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2017 AlphaSierraPapa for the SharpDevelop Team
+﻿// Copyright (c) 2022 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -17,113 +17,44 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.ComponentModel;
-using System.IO;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Security.Principal;
-using System.Windows;
-using System.Windows.Input;
+using System.Xml.Linq;
 
-using ICSharpCode.ILSpy.Commands;
+using TomsToolbox.Wpf;
 
-using Microsoft.Win32;
-
-namespace ICSharpCode.ILSpy.Options
+namespace ICSharpCode.ILSpyX.Settings
 {
-	public class MiscSettings : INotifyPropertyChanged
+	public class MiscSettings : ObservableObject, ISettingsSection
 	{
-		bool allowMultipleInstances;
-		bool loadPreviousAssemblies = true;
+		private bool allowMultipleInstances;
+		private bool loadPreviousAssemblies = true;
 
-		public MiscSettings()
-		{
-			AddRemoveShellIntegrationCommand = new DelegateCommand<object>(AddRemoveShellIntegration);
-		}
-
-		/// <summary>
-		/// Allow multiple instances.
-		/// </summary>
 		public bool AllowMultipleInstances {
-			get { return allowMultipleInstances; }
-			set {
-				if (allowMultipleInstances != value)
-				{
-					allowMultipleInstances = value;
-					OnPropertyChanged();
-				}
-			}
+			get => allowMultipleInstances;
+			set => SetProperty(ref allowMultipleInstances, value);
 		}
 
-		/// <summary>
-		/// Load assemblies that were loaded in the previous instance
-		/// </summary>
 		public bool LoadPreviousAssemblies {
-			get { return loadPreviousAssemblies; }
-			set {
-				if (loadPreviousAssemblies != value)
-				{
-					loadPreviousAssemblies = value;
-					OnPropertyChanged();
-				}
-			}
+			get => loadPreviousAssemblies;
+			set => SetProperty(ref loadPreviousAssemblies, value);
 		}
 
-		public ICommand AddRemoveShellIntegrationCommand { get; }
+		public XName SectionName => "MiscSettings";
 
-		const string rootPath = @"Software\Classes\{0}\shell";
-		const string fullPath = @"Software\Classes\{0}\shell\Open with ILSpy\command";
-
-		private void AddRemoveShellIntegration(object obj)
+		public void LoadFromXml(XElement e)
 		{
-			string commandLine = NativeMethods.ArgumentArrayToCommandLine(Path.ChangeExtension(Assembly.GetEntryAssembly().Location, ".exe")) + " \"%L\"";
-			if (RegistryEntriesExist())
-			{
-				if (MessageBox.Show(string.Format(Properties.Resources.RemoveShellIntegrationMessage, commandLine), "ILSpy", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-				{
-					Registry.CurrentUser.CreateSubKey(string.Format(rootPath, "dllfile")).DeleteSubKeyTree("Open with ILSpy");
-					Registry.CurrentUser.CreateSubKey(string.Format(rootPath, "exefile")).DeleteSubKeyTree("Open with ILSpy");
-				}
-			}
-			else
-			{
-				if (MessageBox.Show(string.Format(Properties.Resources.AddShellIntegrationMessage, commandLine), "ILSpy", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-				{
-					Registry.CurrentUser.CreateSubKey(string.Format(fullPath, "dllfile"))?
-						.SetValue("", commandLine);
-					Registry.CurrentUser.CreateSubKey(string.Format(fullPath, "exefile"))?
-						.SetValue("", commandLine);
-				}
-			}
-			OnPropertyChanged(nameof(AddRemoveShellIntegrationText));
+			AllowMultipleInstances = (bool?)e.Attribute(nameof(AllowMultipleInstances)) ?? false;
+			LoadPreviousAssemblies = (bool?)e.Attribute(nameof(LoadPreviousAssemblies)) ?? true;
 		}
 
-		private static bool RegistryEntriesExist()
+		public XElement SaveToXml()
 		{
-			return Registry.CurrentUser.OpenSubKey(string.Format(fullPath, "dllfile")) != null
-				&& Registry.CurrentUser.OpenSubKey(string.Format(fullPath, "exefile")) != null;
+			var section = new XElement(SectionName);
+
+			section.SetAttributeValue(nameof(AllowMultipleInstances), AllowMultipleInstances);
+			section.SetAttributeValue(nameof(LoadPreviousAssemblies), LoadPreviousAssemblies);
+
+			return section;
 		}
-
-		public string AddRemoveShellIntegrationText {
-			get {
-				return RegistryEntriesExist() ? Properties.Resources.RemoveShellIntegration : Properties.Resources.AddShellIntegration;
-			}
-		}
-
-		#region INotifyPropertyChanged Implementation
-
-		public event PropertyChangedEventHandler PropertyChanged;
-
-		protected virtual void OnPropertyChanged(PropertyChangedEventArgs e)
-		{
-			PropertyChanged?.Invoke(this, e);
-		}
-
-		protected void OnPropertyChanged([CallerMemberName] string propertyName = null)
-		{
-			OnPropertyChanged(new PropertyChangedEventArgs(propertyName));
-		}
-
-		#endregion
 	}
 }
+

@@ -32,11 +32,10 @@ using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.DebugInfo;
 using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.Solution;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
-
-using Microsoft.Win32;
 
 using static ICSharpCode.Decompiler.Metadata.MetadataExtensions;
 
@@ -100,16 +99,17 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		#endregion
 
 		public WholeProjectDecompiler(IAssemblyResolver assemblyResolver)
-			: this(new DecompilerSettings(), assemblyResolver, assemblyReferenceClassifier: null, debugInfoProvider: null)
+			: this(new DecompilerSettings(), assemblyResolver, projectWriter: null, assemblyReferenceClassifier: null, debugInfoProvider: null)
 		{
 		}
 
 		public WholeProjectDecompiler(
 			DecompilerSettings settings,
 			IAssemblyResolver assemblyResolver,
+			IProjectFileWriter projectWriter,
 			AssemblyReferenceClassifier assemblyReferenceClassifier,
 			IDebugInfoProvider debugInfoProvider)
-			: this(settings, Guid.NewGuid(), assemblyResolver, assemblyReferenceClassifier, debugInfoProvider)
+			: this(settings, Guid.NewGuid(), assemblyResolver, projectWriter, assemblyReferenceClassifier, debugInfoProvider)
 		{
 		}
 
@@ -117,6 +117,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			DecompilerSettings settings,
 			Guid projectGuid,
 			IAssemblyResolver assemblyResolver,
+			IProjectFileWriter projectWriter,
 			AssemblyReferenceClassifier assemblyReferenceClassifier,
 			IDebugInfoProvider debugInfoProvider)
 		{
@@ -125,23 +126,23 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			AssemblyResolver = assemblyResolver ?? throw new ArgumentNullException(nameof(assemblyResolver));
 			AssemblyReferenceClassifier = assemblyReferenceClassifier ?? new AssemblyReferenceClassifier();
 			DebugInfoProvider = debugInfoProvider;
-			projectWriter = Settings.UseSdkStyleProjectFormat ? ProjectFileWriterSdkStyle.Create() : ProjectFileWriterDefault.Create();
+			this.projectWriter = projectWriter ?? (Settings.UseSdkStyleProjectFormat ? ProjectFileWriterSdkStyle.Create() : ProjectFileWriterDefault.Create());
 		}
 
 		// per-run members
 		HashSet<string> directories = new HashSet<string>(Platform.FileNameComparer);
 		readonly IProjectFileWriter projectWriter;
 
-		public void DecompileProject(PEFile moduleDefinition, string targetDirectory, CancellationToken cancellationToken = default(CancellationToken))
+		public void DecompileProject(MetadataFile file, string targetDirectory, CancellationToken cancellationToken = default(CancellationToken))
 		{
-			string projectFileName = Path.Combine(targetDirectory, CleanUpFileName(moduleDefinition.Name) + ".csproj");
+			string projectFileName = Path.Combine(targetDirectory, CleanUpFileName(file.Name) + ".csproj");
 			using (var writer = new StreamWriter(projectFileName))
 			{
-				DecompileProject(moduleDefinition, targetDirectory, writer, cancellationToken);
+				DecompileProject(file, targetDirectory, writer, cancellationToken);
 			}
 		}
 
-		public ProjectId DecompileProject(PEFile moduleDefinition, string targetDirectory, TextWriter projectFileWriter, CancellationToken cancellationToken = default(CancellationToken))
+		public ProjectId DecompileProject(MetadataFile file, string targetDirectory, TextWriter projectFileWriter, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			if (string.IsNullOrEmpty(targetDirectory))
 			{
@@ -149,29 +150,37 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			}
 			TargetDirectory = targetDirectory;
 			directories.Clear();
-			var resources = WriteResourceFilesInProject(moduleDefinition).ToList();
-			var files = WriteCodeFilesInProject(moduleDefinition, resources.SelectMany(r => r.partialTypes ?? Enumerable.Empty<PartialTypeInfo>()).ToList(), cancellationToken).ToList();
-			files.AddRange(resources.Select(r => (r.itemType, r.fileName)));
-			files.AddRange(WriteMiscellaneousFilesInProject(moduleDefinition));
+			var resources = WriteResourceFilesInProject(file).ToList();
+			var files = WriteCodeFilesInProject(file, resources.SelectMany(r => r.PartialTypes ?? Enumerable.Empty<PartialTypeInfo>()).ToList(), cancellationToken).ToList();
+			files.AddRange(resources);
+			var module = file as PEFile;
+			if (module != null)
+			{
+				files.AddRange(WriteMiscellaneousFilesInProject(module));
+			}
 			if (StrongNameKeyFile != null)
 			{
 				File.Copy(StrongNameKeyFile, Path.Combine(targetDirectory, Path.GetFileName(StrongNameKeyFile)), overwrite: true);
 			}
 
-			projectWriter.Write(projectFileWriter, this, files, moduleDefinition);
+			projectWriter.Write(projectFileWriter, this, files, file);
 
-			string platformName = TargetServices.GetPlatformName(moduleDefinition);
+			string platformName = module != null ? TargetServices.GetPlatformName(module) : "AnyCPU";
 			return new ProjectId(platformName, ProjectGuid, ProjectTypeGuids.CSharpWindows);
 		}
 
 		#region WriteCodeFilesInProject
-		protected virtual bool IncludeTypeWhenDecompilingProject(PEFile module, TypeDefinitionHandle type)
+		protected virtual bool IncludeTypeWhenDecompilingProject(MetadataFile module, TypeDefinitionHandle type)
 		{
 			var metadata = module.Metadata;
 			var typeDef = metadata.GetTypeDefinition(type);
-			if (metadata.GetString(typeDef.Name) == "<Module>" || CSharpDecompiler.MemberIsHidden(module, type, Settings))
+			string name = metadata.GetString(typeDef.Name);
+			string ns = metadata.GetString(typeDef.Namespace);
+			if (name == "<Module>" || CSharpDecompiler.MemberIsHidden(module, type, Settings))
 				return false;
-			if (metadata.GetString(typeDef.Namespace) == "XamlGeneratedNamespace" && metadata.GetString(typeDef.Name) == "GeneratedInternalTypeHelper")
+			if (ns == "XamlGeneratedNamespace" && name == "GeneratedInternalTypeHelper")
+				return false;
+			if (!typeDef.IsNested && RemoveEmbeddedAttributes.attributeNames.Contains(ns + "." + name))
 				return false;
 			return true;
 		}
@@ -185,7 +194,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			return decompiler;
 		}
 
-		IEnumerable<(string itemType, string fileName)> WriteAssemblyInfo(DecompilerTypeSystem ts, CancellationToken cancellationToken)
+		IEnumerable<ProjectItemInfo> WriteAssemblyInfo(DecompilerTypeSystem ts, CancellationToken cancellationToken)
 		{
 			var decompiler = CreateDecompiler(ts);
 			decompiler.CancellationToken = cancellationToken;
@@ -200,43 +209,74 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			{
 				syntaxTree.AcceptVisitor(new CSharpOutputVisitor(w, Settings.CSharpFormattingOptions));
 			}
-			return new[] { ("Compile", assemblyInfo) };
+			return new[] { new ProjectItemInfo("Compile", assemblyInfo) };
 		}
 
-		IEnumerable<(string itemType, string fileName)> WriteCodeFilesInProject(Metadata.PEFile module, IList<PartialTypeInfo> partialTypes, CancellationToken cancellationToken)
+		IEnumerable<ProjectItemInfo> WriteCodeFilesInProject(MetadataFile module, IList<PartialTypeInfo> partialTypes, CancellationToken cancellationToken)
 		{
 			var metadata = module.Metadata;
-			var files = module.Metadata.GetTopLevelTypeDefinitions().Where(td => IncludeTypeWhenDecompilingProject(module, td)).GroupBy(
-				delegate (TypeDefinitionHandle h) {
-					var type = metadata.GetTypeDefinition(h);
-					string file = CleanUpFileName(metadata.GetString(type.Name)) + ".cs";
-					string ns = metadata.GetString(type.Namespace);
-					if (string.IsNullOrEmpty(ns))
-					{
-						return file;
-					}
-					else
-					{
-						string dir = Settings.UseNestedDirectoriesForNamespaces ? CleanUpPath(ns) : CleanUpDirectoryName(ns);
-						if (directories.Add(dir))
-							Directory.CreateDirectory(Path.Combine(TargetDirectory, dir));
-						return Path.Combine(dir, file);
-					}
-				}, StringComparer.OrdinalIgnoreCase).ToList();
+			var files = module.Metadata.GetTopLevelTypeDefinitions().Where(td => IncludeTypeWhenDecompilingProject(module, td))
+				.GroupBy(GetFileFileNameForHandle, StringComparer.OrdinalIgnoreCase).ToList();
 			var progressReporter = ProgressIndicator;
 			var progress = new DecompilationProgress { TotalUnits = files.Count, Title = "Exporting project..." };
 			DecompilerTypeSystem ts = new DecompilerTypeSystem(module, AssemblyResolver, Settings);
-			Parallel.ForEach(
-				Partitioner.Create(files, loadBalance: true),
-				new ParallelOptions {
-					MaxDegreeOfParallelism = this.MaxDegreeOfParallelism,
-					CancellationToken = cancellationToken
-				},
-				delegate (IGrouping<string, TypeDefinitionHandle> file) {
-					using (StreamWriter w = new StreamWriter(Path.Combine(TargetDirectory, file.Key)))
+			var workList = new HashSet<TypeDefinitionHandle>();
+			var processedTypes = new HashSet<TypeDefinitionHandle>();
+			ProcessFiles(files);
+			while (workList.Count > 0)
+			{
+				var additionalFiles = workList
+					.GroupBy(GetFileFileNameForHandle, StringComparer.OrdinalIgnoreCase).ToList();
+				workList.Clear();
+				ProcessFiles(additionalFiles);
+				files.AddRange(additionalFiles);
+				progress.TotalUnits = files.Count;
+			}
+
+			return files.Select(f => new ProjectItemInfo("Compile", f.Key)).Concat(WriteAssemblyInfo(ts, cancellationToken));
+
+			string GetFileFileNameForHandle(TypeDefinitionHandle h)
+			{
+				var type = metadata.GetTypeDefinition(h);
+				string file = SanitizeFileName(metadata.GetString(type.Name) + ".cs");
+				string ns = metadata.GetString(type.Namespace);
+				if (string.IsNullOrEmpty(ns))
+				{
+					return file;
+				}
+				else
+				{
+					string dir = Settings.UseNestedDirectoriesForNamespaces ? CleanUpPath(ns) : CleanUpDirectoryName(ns);
+					if (directories.Add(dir))
 					{
+						var path = Path.Combine(TargetDirectory, dir);
 						try
 						{
+							Directory.CreateDirectory(path);
+						}
+						catch (IOException)
+						{
+							File.Delete(path);
+							Directory.CreateDirectory(path);
+						}
+					}
+					return Path.Combine(dir, file);
+				}
+			}
+
+			void ProcessFiles(List<IGrouping<string, TypeDefinitionHandle>> files)
+			{
+				processedTypes.AddRange(files.SelectMany(f => f));
+				Parallel.ForEach(
+					Partitioner.Create(files, loadBalance: true),
+					new ParallelOptions {
+						MaxDegreeOfParallelism = this.MaxDegreeOfParallelism,
+						CancellationToken = cancellationToken
+					},
+					delegate (IGrouping<string, TypeDefinitionHandle> file) {
+						try
+						{
+							using StreamWriter w = new StreamWriter(Path.Combine(TargetDirectory, file.Key));
 							CSharpDecompiler decompiler = CreateDecompiler(ts);
 
 							foreach (var partialType in partialTypes)
@@ -245,24 +285,43 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 							}
 
 							decompiler.CancellationToken = cancellationToken;
-							var syntaxTree = decompiler.DecompileTypes(file.ToArray());
+							var declaredTypes = file.ToArray();
+							var syntaxTree = decompiler.DecompileTypes(declaredTypes);
+
+							foreach (var node in syntaxTree.Descendants)
+							{
+								var td = (node.GetResolveResult() as TypeResolveResult)?.Type.GetDefinition();
+								if (td?.ParentModule != ts.MainModule)
+									continue;
+								while (td?.DeclaringTypeDefinition != null)
+								{
+									td = td.DeclaringTypeDefinition;
+								}
+								if (td != null && td.MetadataToken is { IsNil: false } token && !processedTypes.Contains((TypeDefinitionHandle)token))
+								{
+									lock (workList)
+									{
+										workList.Add((TypeDefinitionHandle)token);
+									}
+								}
+							}
+
 							syntaxTree.AcceptVisitor(new CSharpOutputVisitor(w, Settings.CSharpFormattingOptions));
 						}
 						catch (Exception innerException) when (!(innerException is OperationCanceledException || innerException is DecompilerException))
 						{
 							throw new DecompilerException(module, $"Error decompiling for '{file.Key}'", innerException);
 						}
-					}
-					progress.Status = file.Key;
-					Interlocked.Increment(ref progress.UnitsCompleted);
-					progressReporter?.Report(progress);
-				});
-			return files.Select(f => ("Compile", f.Key)).Concat(WriteAssemblyInfo(ts, cancellationToken));
+						progress.Status = file.Key;
+						Interlocked.Increment(ref progress.UnitsCompleted);
+						progressReporter?.Report(progress);
+					});
+			}
 		}
 		#endregion
 
 		#region WriteResourceFilesInProject
-		protected virtual IEnumerable<(string itemType, string fileName, List<PartialTypeInfo> partialTypes)> WriteResourceFilesInProject(Metadata.PEFile module)
+		protected virtual IEnumerable<ProjectItemInfo> WriteResourceFilesInProject(MetadataFile module)
 		{
 			foreach (var r in module.Resources.Where(r => r.ResourceType == ResourceType.Embedded))
 			{
@@ -272,7 +331,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				if (r.Name.EndsWith(".resources", StringComparison.OrdinalIgnoreCase))
 				{
 					bool decodedIntoIndividualFiles;
-					var individualResources = new List<(string itemType, string fileName, List<PartialTypeInfo> partialTypes)>();
+					var individualResources = new List<ProjectItemInfo>();
 					try
 					{
 						var resourcesFile = new ResourcesFile(stream);
@@ -332,12 +391,12 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 						stream.Position = 0;
 						stream.CopyTo(fs);
 					}
-					yield return ("EmbeddedResource", fileName, null);
+					yield return new ProjectItemInfo("EmbeddedResource", fileName).With("LogicalName", r.Name);
 				}
 			}
 		}
 
-		protected virtual IEnumerable<(string itemType, string fileName, List<PartialTypeInfo> partialTypes)> WriteResourceToFile(string fileName, string resourceName, Stream entryStream)
+		protected virtual IEnumerable<ProjectItemInfo> WriteResourceToFile(string fileName, string resourceName, Stream entryStream)
 		{
 			if (fileName.EndsWith(".resources", StringComparison.OrdinalIgnoreCase))
 			{
@@ -352,7 +411,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 							writer.AddResource(entry.Key, entry.Value);
 						}
 					}
-					return new[] { ("EmbeddedResource", resx, (List<PartialTypeInfo>)null) };
+					return new[] { new ProjectItemInfo("EmbeddedResource", resx).With("LogicalName", resourceName) };
 				}
 				catch (BadImageFormatException)
 				{
@@ -367,7 +426,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			{
 				entryStream.CopyTo(fs);
 			}
-			return new[] { ("EmbeddedResource", fileName, (List<PartialTypeInfo>)null) };
+			return new[] { new ProjectItemInfo("EmbeddedResource", fileName).With("LogicalName", resourceName) };
 		}
 
 		string GetFileNameForResource(string fullName)
@@ -380,7 +439,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			// the directory part Namespace1\Namespace2\... reuses as many existing directories as
 			// possible, and only the remaining name parts are used as prefix for the filename.
 			// This is not affected by the UseNestedDirectoriesForNamespaces setting.
-			string[] splitName = fullName.Split(Path.DirectorySeparatorChar);
+			string[] splitName = fullName.Split('\\', '/');
 			string fileName = string.Join(".", splitName);
 			string separator = Path.DirectorySeparatorChar.ToString();
 			for (int i = splitName.Length - 1; i > 0; i--)
@@ -398,7 +457,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		#endregion
 
 		#region WriteMiscellaneousFilesInProject
-		protected virtual IEnumerable<(string itemType, string fileName)> WriteMiscellaneousFilesInProject(PEFile module)
+		protected virtual IEnumerable<ProjectItemInfo> WriteMiscellaneousFilesInProject(PEFile module)
 		{
 			var resources = module.Reader.ReadWin32Resources();
 			if (resources == null)
@@ -408,21 +467,21 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			if (appIcon != null)
 			{
 				File.WriteAllBytes(Path.Combine(TargetDirectory, "app.ico"), appIcon);
-				yield return ("ApplicationIcon", "app.ico");
+				yield return new ProjectItemInfo("ApplicationIcon", "app.ico");
 			}
 
 			byte[] appManifest = CreateApplicationManifest(resources);
 			if (appManifest != null && !IsDefaultApplicationManifest(appManifest))
 			{
 				File.WriteAllBytes(Path.Combine(TargetDirectory, "app.manifest"), appManifest);
-				yield return ("ApplicationManifest", "app.manifest");
+				yield return new ProjectItemInfo("ApplicationManifest", "app.manifest");
 			}
 
 			var appConfig = module.FileName + ".config";
 			if (File.Exists(appConfig))
 			{
 				File.Copy(appConfig, Path.Combine(TargetDirectory, "app.config"), overwrite: true);
-				yield return ("ApplicationConfig", Path.GetFileName(appConfig));
+				yield return new ProjectItemInfo("ApplicationConfig", Path.GetFileName(appConfig));
 			}
 		}
 
@@ -572,10 +631,8 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		/// </summary>
 		static string CleanUpName(string text, bool separateAtDots, bool treatAsFileName)
 		{
+			// Remove anything that could be confused with a rooted path.
 			int pos = text.IndexOf(':');
-			if (pos > 0)
-				text = text.Substring(0, pos);
-			pos = text.IndexOf('`');
 			if (pos > 0)
 				text = text.Substring(0, pos);
 			text = text.Trim();
@@ -606,6 +663,12 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 					}
 				}
 			}
+			// Remove generics
+			pos = text.IndexOf('`');
+			if (pos > 0)
+			{
+				text = text.Substring(0, pos).Trim();
+			}
 			// Whitelist allowed characters, replace everything else:
 			StringBuilder b = new StringBuilder(text.Length + (extension?.Length ?? 0));
 			foreach (var c in text)
@@ -629,10 +692,10 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 					if (separateAtDots)
 						currentSegmentLength = 0;
 				}
-				else if (treatAsFileName && (c == '/' || c == '\\') && currentSegmentLength > 0)
+				else if (treatAsFileName && (c is '/' or '\\') && currentSegmentLength > 1)
 				{
 					// if we treat this as a file name, we've started a new segment
-					b.Append(c);
+					b.Append(Path.DirectorySeparatorChar);
 					currentSegmentLength = 0;
 				}
 				else
@@ -647,7 +710,15 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				b.Append('-');
 			string name = b.ToString();
 			if (extension != null)
+			{
+				// make sure that adding the extension to the filename
+				// does not exceed maxSegmentLength.
+				// trim the name, if necessary.
+				if (name.Length + extension.Length > maxSegmentLength)
+					name = name.Remove(name.Length - extension.Length);
 				name += extension;
+			}
+
 			if (IsReservedFileSystemName(name))
 				return name + "_";
 			else if (name == ".")
@@ -702,9 +773,30 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			}
 		}
 
-		public static bool CanUseSdkStyleProjectFormat(PEFile module)
+		public static bool CanUseSdkStyleProjectFormat(MetadataFile module)
 		{
 			return TargetServices.DetectTargetFramework(module).Moniker != null;
+		}
+	}
+
+	public record struct ProjectItemInfo(string ItemType, string FileName)
+	{
+		public List<PartialTypeInfo> PartialTypes { get; set; } = null;
+
+		public Dictionary<string, string> AdditionalProperties { get; set; } = null;
+
+		public ProjectItemInfo With(string name, string value)
+		{
+			AdditionalProperties ??= new Dictionary<string, string>();
+			AdditionalProperties.Add(name, value);
+			return this;
+		}
+
+		public ProjectItemInfo With(IEnumerable<KeyValuePair<string, string>> pairs)
+		{
+			AdditionalProperties ??= new Dictionary<string, string>();
+			AdditionalProperties.AddRange(pairs);
+			return this;
 		}
 	}
 }

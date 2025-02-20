@@ -29,6 +29,7 @@ using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Solution;
 using ICSharpCode.Decompiler.Util;
 using ICSharpCode.ILSpy.TextView;
+using ICSharpCode.ILSpy.ViewModels;
 using ICSharpCode.ILSpyX;
 
 namespace ICSharpCode.ILSpy
@@ -45,15 +46,17 @@ namespace ICSharpCode.ILSpy
 		/// to the <paramref name="solutionFilePath"/>. The directory of this file must either
 		/// be empty or not exist.
 		/// </summary>
+		/// <param name="tabPage"></param>
 		/// <param name="textView">A reference to the <see cref="DecompilerTextView"/> instance.</param>
 		/// <param name="solutionFilePath">The target file path of the solution file.</param>
+		/// <param name="language"></param>
 		/// <param name="assemblies">The assembly nodes to decompile.</param>
-		/// 
 		/// <exception cref="ArgumentException">Thrown when <paramref name="solutionFilePath"/> is null,
 		/// an empty or a whitespace string.</exception>
 		/// <exception cref="ArgumentNullException">Thrown when <paramref name="textView"/>> or
 		/// <paramref name="assemblies"/> is null.</exception>
-		public static void CreateSolution(DecompilerTextView textView, string solutionFilePath, Language language, IEnumerable<LoadedAssembly> assemblies)
+		public static void CreateSolution(TabPageModel tabPage, DecompilerTextView textView, string solutionFilePath,
+			Language language, IEnumerable<LoadedAssembly> assemblies)
 		{
 			if (textView == null)
 			{
@@ -73,7 +76,7 @@ namespace ICSharpCode.ILSpy
 			var writer = new SolutionWriter(solutionFilePath);
 
 			textView
-				.RunWithCancellation(ct => writer.CreateSolution(assemblies, language, ct))
+				.RunWithCancellation(ct => writer.CreateSolution(tabPage, assemblies, language, ct))
 				.Then(output => textView.ShowText(output))
 				.HandleExceptions();
 		}
@@ -91,16 +94,45 @@ namespace ICSharpCode.ILSpy
 			projects = new ConcurrentBag<ProjectItem>();
 		}
 
-		async Task<AvalonEditTextOutput> CreateSolution(IEnumerable<LoadedAssembly> assemblies, Language language, CancellationToken ct)
+		async Task<AvalonEditTextOutput> CreateSolution(TabPageModel tabPage, IEnumerable<LoadedAssembly> assemblies, Language language, CancellationToken ct)
 		{
 			var result = new AvalonEditTextOutput();
 
-			var duplicates = new HashSet<string>();
-			if (assemblies.Any(asm => !duplicates.Add(asm.ShortName)))
+			var assembliesByShortName = assemblies.ToLookup(_ => _.ShortName);
+			bool first = true;
+			bool abort = false;
+
+			foreach (var item in assembliesByShortName)
 			{
-				result.WriteLine("Duplicate assembly names selected, cannot generate a solution.");
-				return result;
+				var enumerator = item.GetEnumerator();
+				if (!enumerator.MoveNext())
+					continue;
+				var firstAssembly = enumerator.Current;
+				if (!enumerator.MoveNext())
+					continue;
+				if (first)
+				{
+					result.WriteLine("Duplicate assembly names selected, cannot generate a solution:");
+					abort = true;
+				}
+
+				result.Write("- " + firstAssembly.Text + " conflicts with ");
+
+				first = true;
+				do
+				{
+					var asm = enumerator.Current;
+					if (!first)
+						result.Write(", ");
+					result.Write(asm.Text);
+					first = false;
+				} while (enumerator.MoveNext());
+				result.WriteLine();
+				first = false;
 			}
+
+			if (abort)
+				return result;
 
 			Stopwatch stopwatch = Stopwatch.StartNew();
 
@@ -111,7 +143,7 @@ namespace ICSharpCode.ILSpy
 				// long to decompile.
 				await Task.Run(() => Parallel.ForEach(Partitioner.Create(assemblies),
 					new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = ct },
-					n => WriteProject(n, language, solutionDirectory, ct)))
+					item => WriteProject(tabPage, item, language, solutionDirectory, ct)))
 					.ConfigureAwait(false);
 
 				if (projects.Count == 0)
@@ -173,7 +205,7 @@ namespace ICSharpCode.ILSpy
 			return result;
 		}
 
-		void WriteProject(LoadedAssembly loadedAssembly, Language language, string targetDirectory, CancellationToken ct)
+		void WriteProject(TabPageModel tabPage, LoadedAssembly loadedAssembly, Language language, string targetDirectory, CancellationToken ct)
 		{
 			targetDirectory = Path.Combine(targetDirectory, loadedAssembly.ShortName);
 
@@ -212,7 +244,7 @@ namespace ICSharpCode.ILSpy
 				using (var projectFileWriter = new StreamWriter(projectFileName))
 				{
 					var projectFileOutput = new PlainTextOutput(projectFileWriter);
-					var options = MainWindow.Instance.CreateDecompilationOptions();
+					var options = tabPage.CreateDecompilationOptions();
 					options.FullDecompilation = true;
 					options.CancellationToken = ct;
 					options.SaveAsProjectDirectory = targetDirectory;

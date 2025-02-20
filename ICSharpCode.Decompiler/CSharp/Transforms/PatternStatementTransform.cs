@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -761,14 +761,19 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			var parent = identifier.Parent;
 			var mrr = parent.Annotation<MemberResolveResult>();
 			var field = mrr?.Member as IField;
-			if (field == null)
+			if (field == null || field.Accessibility != Accessibility.Private)
 				return null;
-			var @event = field.DeclaringType.GetEvents(ev => ev.Name == field.Name, GetMemberOptions.IgnoreInheritedMembers).SingleOrDefault();
-			if (@event != null && currentMethod.AccessorOwner != @event)
+			foreach (var ev in field.DeclaringType.GetEvents(null, GetMemberOptions.IgnoreInheritedMembers))
 			{
-				parent.RemoveAnnotations<MemberResolveResult>();
-				parent.AddAnnotation(new MemberResolveResult(mrr.TargetResult, @event));
-				return identifier;
+				if (CSharpDecompiler.IsEventBackingFieldName(field.Name, ev.Name, out int suffixLength) &&
+					currentMethod.AccessorOwner != ev)
+				{
+					parent.RemoveAnnotations<MemberResolveResult>();
+					parent.AddAnnotation(new MemberResolveResult(mrr.TargetResult, ev));
+					if (suffixLength != 0)
+						identifier.Name = identifier.Name.Substring(0, identifier.Name.Length - suffixLength);
+					return identifier;
+				}
 			}
 			return null;
 		}
@@ -911,11 +916,11 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			switch (fieldExpression)
 			{
 				case IdentifierExpression identifier:
-					if (identifier.Identifier != ev.Name)
+					if (!CSharpDecompiler.IsEventBackingFieldName(identifier.Identifier, ev.Name, out _))
 						return false;
 					break;
 				case MemberReferenceExpression memberRef:
-					if (memberRef.MemberName != ev.Name)
+					if (!CSharpDecompiler.IsEventBackingFieldName(memberRef.MemberName, ev.Name, out _))
 						return false;
 					break;
 				default:
@@ -994,7 +999,9 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (!ev.PrivateImplementationType.IsNull)
 				return null;
 			const Modifiers withoutBody = Modifiers.Abstract | Modifiers.Extern;
-			if ((ev.Modifiers & withoutBody) == 0 && ev.GetSymbol() is IEvent symbol)
+			if (ev.GetSymbol() is not IEvent symbol)
+				return null;
+			if ((ev.Modifiers & withoutBody) == 0)
 			{
 				if (!CheckAutomaticEventV4AggressivelyInlined(ev) && !CheckAutomaticEventV4(ev) && !CheckAutomaticEventV2(ev) && !CheckAutomaticEventV4MCS(ev))
 					return null;
@@ -1013,7 +1020,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			ed.CopyAnnotationsFrom(ev);
 
 			var fieldDecl = ev.Parent?.Children.OfType<FieldDeclaration>()
-				.FirstOrDefault(fd => fd.Variables.Single().Name == ev.Name);
+				.FirstOrDefault(IsEventBackingField);
 			if (fieldDecl != null)
 			{
 				fieldDecl.Remove();
@@ -1028,6 +1035,17 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 			ev.ReplaceWith(ed);
 			return ed;
+
+			bool IsEventBackingField(FieldDeclaration fd)
+			{
+				if (fd.Variables.Count > 1)
+					return false;
+				if (fd.GetSymbol() is not IField f)
+					return false;
+				return f.Accessibility == Accessibility.Private
+					&& symbol.ReturnType.Equals(f.ReturnType)
+					&& CSharpDecompiler.IsEventBackingFieldName(f.Name, ev.Name, out _);
+			}
 		}
 		#endregion
 
@@ -1161,6 +1179,17 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					break;
 			}
 			return base.VisitBinaryOperatorExpression(expr);
+		}
+
+		public override AstNode VisitUnaryOperatorExpression(UnaryOperatorExpression expr)
+		{
+			if (expr.Operator == UnaryOperatorType.Not && expr.Expression is BinaryOperatorExpression { Operator: BinaryOperatorType.Equality } binary)
+			{
+				binary.Operator = BinaryOperatorType.InEquality;
+				expr.ReplaceWith(binary.Detach());
+				return VisitBinaryOperatorExpression(binary);
+			}
+			return base.VisitUnaryOperatorExpression(expr);
 		}
 		#endregion
 

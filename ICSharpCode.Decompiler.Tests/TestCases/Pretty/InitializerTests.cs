@@ -34,6 +34,10 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.InitializerTests
 		public static void Add<T>(this IList<KeyValuePair<string, string>> collection, string key, T value, Func<T, string> convert = null)
 		{
 		}
+
+		public static void Add(this TestCases collection, string key)
+		{
+		}
 	}
 
 	public class TestCases
@@ -231,6 +235,64 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.InitializerTests
 		{
 			int Property { get; set; }
 		}
+
+#if CS90
+		public class Issue3392Type
+		{
+			public bool Flag { get; init; }
+			public List<int> List { get; } = new List<int>();
+
+			public Issue3392Type(object x)
+			{
+
+			}
+		}
+
+		private class StructInitPropertiesTest
+		{
+			private class TypeA
+			{
+				public int A { get; set; }
+				public int B { get; set; }
+			}
+
+			private struct TypeB
+			{
+				public int A { get; set; }
+				public int B { get; set; }
+			}
+
+			private struct TypeC
+			{
+				public int A { get; init; }
+				public int B { get; init; }
+			}
+
+			private static TypeA TestA()
+			{
+				return new TypeA {
+					A = 1,
+					B = 2
+				};
+			}
+
+			private static TypeB TestB()
+			{
+				return new TypeB {
+					A = 1,
+					B = 2
+				};
+			}
+
+			private static TypeC TestC()
+			{
+				return new TypeC {
+					A = 1,
+					B = 2
+				};
+			}
+		}
+#endif
 		#endregion
 
 		private S s1;
@@ -382,6 +444,9 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.InitializerTests
 		public static ReadOnlySpan<byte> StaticData3 => new byte[3] { 1, 2, 3 };
 
 		public static Span<byte> StaticData3Span => new byte[3] { 1, 2, 3 };
+#endif
+#if CS110 && !NET40
+		public static ReadOnlySpan<byte> UTF8Literal => "Hello, world!"u8;
 #endif
 		#endregion
 
@@ -908,14 +973,6 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.InitializerTests
 			});
 		}
 
-		public static void NotAStructInitializer_DefaultConstructor()
-		{
-			StructData structData = default(StructData);
-			structData.Field = 1;
-			structData.Property = 2;
-			X(Y(), structData);
-		}
-
 		public static void StructInitializer_DefaultConstructor()
 		{
 			X(Y(), new StructData {
@@ -934,14 +991,6 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.InitializerTests
 				A = 42,
 				B = 24
 			};
-		}
-
-		public static void NotAStructInitializer_ExplicitConstructor()
-		{
-			StructData structData = new StructData(0);
-			structData.Field = 1;
-			structData.Property = 2;
-			X(Y(), structData);
 		}
 
 		public static void StructInitializer_ExplicitConstructor()
@@ -1003,6 +1052,17 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.InitializerTests
 			otherItem.Data2.Nullable = 3m;
 			return otherItem;
 		}
+
+#if CS90
+		public Issue3392Type Issue3392(Issue3392Type x)
+		{
+			x = new Issue3392Type(null) {
+				Flag = false
+			};
+			x.List.AddRange(Enumerable.Range(0, 10));
+			return x;
+		}
+#endif
 #if CS60
 		public OtherItem2 Issue1345c()
 		{
@@ -1099,6 +1159,14 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.InitializerTests
 			CustomList<int> customList = new CustomList<int>();
 			customList.Add<int>("int");
 			Console.WriteLine(customList);
+		}
+
+		public static TestCases NoCollectionInitializerBecauseOfMissingIEnumerable()
+		{
+			TestCases testCases = new TestCases();
+			testCases.Add("int");
+			testCases.Add("string");
+			return testCases;
 		}
 
 		public static void CollectionInitializerWithParamsMethod()
